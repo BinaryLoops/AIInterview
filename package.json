@@ -1,0 +1,27 @@
+{
+  "name": "ai-recruitment-ecosystem",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI Recruitment Preparation Ecosystem monorepo",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=24.14.0",
+    "pnpm": ">=10.32.1"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present run dev",
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:postgres": "pnpm --filter auth-service test:postgres",
+    "auth:validate-config": "pnpm --filter auth-service config:validate",
+    "infra:config": "docker compose --env-file .env.example -f infra/docker/compose.yaml config",
+    "infra:up": "docker compose --env-file .env -f infra/docker/compose.yaml up -d --wait",
+    "infra:down": "docker compose --env-file .env -f infra/docker/compose.yaml down",
+    "infra:ps": "docker compose --env-file .env -f infra/docker/compose.yaml ps",
+    "infra:logs": "docker compose --env-file .env -f infra/docker/compose.yaml logs -f --tail=100"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

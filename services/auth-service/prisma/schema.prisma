@@ -1,0 +1,242 @@
+// =============================================================================
+// Auth-Service Prisma Schema
+// =============================================================================
+// Owns only authentication, identity, and security tables.
+// Do NOT add resume, profile, assessment, company, or recruiter tables here.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// Account lifecycle status.
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+/// Purpose of an OTP challenge.
+enum OtpPurpose {
+  EMAIL_VERIFICATION
+  LOGIN
+  PASSWORD_RESET
+  MOBILE_VERIFICATION
+}
+
+/// State of an OTP challenge.
+enum OtpState {
+  PENDING
+  CONSUMED
+  EXPIRED
+  INVALIDATED
+}
+
+/// Categories for security audit events.
+enum SecurityEventType {
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  LOGOUT
+  PASSWORD_CHANGE
+  PASSWORD_RESET_REQUEST
+  PASSWORD_RESET_COMPLETE
+  EMAIL_VERIFIED
+  ACCOUNT_LOCKED
+  ACCOUNT_SUSPENDED
+  ACCOUNT_DEACTIVATED
+  ACCOUNT_REACTIVATED
+  SESSION_REVOKED
+  OTP_REQUESTED
+  OTP_VERIFIED
+  OTP_FAILED
+  EXTERNAL_LOGIN
+  ROLE_ASSIGNED
+  ROLE_REVOKED
+}
+
+// =============================================================================
+// User
+// =============================================================================
+
+/// Core identity record. Owns only authentication-relevant fields.
+model User {
+  id                String    @id @default(uuid()) @db.Uuid
+  email             String    @unique @db.VarChar(320)
+  mobileNumber      String?   @unique @map("mobile_number") @db.VarChar(20)
+  passwordHash      String?   @map("password_hash") @db.VarChar(255)
+  emailVerified     Boolean   @default(false) @map("email_verified")
+  accountStatus     AccountStatus @default(ACTIVE) @map("account_status")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  externalIdentities ExternalIdentity[]
+  userRoles          UserRole[]
+  otpChallenges      OtpChallenge[]
+  sessions           AuthSession[]
+  passwordHistory    PasswordHistory[]
+  securityEvents     SecurityEvent[]
+
+  @@map("users")
+}
+
+// =============================================================================
+// ExternalIdentity (OAuth / SSO providers)
+// =============================================================================
+
+/// Links a user to an external authentication provider.
+model ExternalIdentity {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  provider        String   @db.VarChar(50)
+  providerSubject String   @map("provider_subject") @db.VarChar(255)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerSubject], name: "uq_provider_subject")
+  @@index([userId], name: "idx_external_identity_user")
+  @@map("external_identities")
+}
+
+// =============================================================================
+// Role & UserRole (RBAC)
+// =============================================================================
+
+/// Stable role definition.
+/// Seeded with: CANDIDATE, RECRUITER, COMPANY_HR, MODERATOR, ADMIN, SUPER_ADMIN
+model Role {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @unique @db.VarChar(50)
+  description String?    @db.VarChar(255)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  userRoles UserRole[]
+
+  @@map("roles")
+}
+
+/// Association between a user and a role. Privileged roles (MODERATOR, ADMIN,
+/// SUPER_ADMIN) must never be self-assignable through public registration.
+model UserRole {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, roleId], name: "uq_user_role")
+  @@index([roleId], name: "idx_user_role_role")
+  @@map("user_roles")
+}
+
+// =============================================================================
+// OtpChallenge
+// =============================================================================
+
+/// Stores hashed OTP verifiers. Raw OTP codes are NEVER persisted.
+model OtpChallenge {
+  id           String     @id @default(uuid()) @db.Uuid
+  userId       String?    @map("user_id") @db.Uuid
+  identifier   String     @db.VarChar(320)
+  purpose      OtpPurpose
+  verifierHash String     @map("verifier_hash") @db.VarChar(255)
+  expiresAt    DateTime   @map("expires_at") @db.Timestamptz
+  attemptCount Int        @default(0) @map("attempt_count")
+  maxAttempts  Int        @default(5) @map("max_attempts")
+  state        OtpState   @default(PENDING)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations — userId is nullable for pre-registration verification flows.
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], name: "idx_otp_user")
+  @@index([identifier, purpose, state], name: "idx_otp_lookup")
+  @@map("otp_challenges")
+}
+
+// =============================================================================
+// AuthSession
+// =============================================================================
+
+/// Tracks active authentication sessions. Stores only a hashed refresh-token
+/// verifier — never the raw token.
+model AuthSession {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  refreshTokenHash    String    @map("refresh_token_hash") @db.VarChar(255)
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz
+  userAgent           String?   @map("user_agent") @db.VarChar(512)
+  ipAddress           String?   @map("ip_address") @db.VarChar(45)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  securityEvents  SecurityEvent[]
+
+  @@index([userId], name: "idx_session_user")
+  @@index([expiresAt], name: "idx_session_expiry")
+  @@map("auth_sessions")
+}
+
+// =============================================================================
+// PasswordHistory
+// =============================================================================
+
+/// Records previous password hashes so that password reuse can be prevented.
+/// Plaintext passwords are NEVER stored.
+model PasswordHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], name: "idx_password_history_user")
+  @@map("password_history")
+}
+
+// =============================================================================
+// SecurityEvent
+// =============================================================================
+
+/// Append-only security audit log. Never stores passwords, raw OTPs, access
+/// tokens, or refresh tokens in metadata.
+model SecurityEvent {
+  id          String            @id @default(uuid()) @db.Uuid
+  eventType   SecurityEventType @map("event_type")
+  userId      String?           @map("user_id") @db.Uuid
+  sessionId   String?           @map("session_id") @db.Uuid
+  ipAddress   String?           @map("ip_address") @db.VarChar(45)
+  metadata    Json?             @db.JsonB
+  occurredAt  DateTime          @default(now()) @map("occurred_at") @db.Timestamptz
+
+  // Relations
+  user    User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session AuthSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId], name: "idx_security_event_user")
+  @@index([eventType, occurredAt], name: "idx_security_event_type_time")
+  @@map("security_events")
+}
